@@ -310,7 +310,13 @@ def main():
         distances.append(nearest)
 
     df["HospitalDist"] = distances
-    df["hospital_intensity"] = ((df["HospitalDist"] - 0.5).clip(0, 14.5)) / 14.5
+    # 0–10 miles = yellow zone, 10–15 miles = red zone
+    df["hospital_intensity"] = df["HospitalDist"].apply(
+        lambda d: 0 if d <= 1 else
+                  (d - 1) / 9  if d <= 10 else
+                  1 - (15 - d) / 5 if d <= 15 else
+                  1
+    )
     dist_data = df[["Latitude", "Longitude", "hospital_intensity"]].values.tolist()
 
     hospitaldist_layer = folium.FeatureGroup(name="Hospital Distance", show=False)
@@ -322,11 +328,12 @@ def main():
         max_zoom=12,
         min_opacity=0.02,
         gradient={
-            0.00: "rgba(255, 0, 0, 0.00)",
-            0.25: "rgba(255, 69, 0, 0.40)",
-            0.50: "rgba(255, 140, 0, 0.55)",
-            0.75: "rgba(255, 165, 0, 0.70)",
-            1.00: "rgba(255, 0, 0, 0.95)"
+            0.00: "rgba(255, 255, 0, 0.00)",   # transparent
+            0.10: "rgba(255, 255, 102, 0.25)", # very light yellow
+            0.30: "rgba(255, 220, 0, 0.40)",   # yellow
+            0.60: "rgba(255, 165, 0, 0.60)",   # orange
+            0.85: "rgba(255, 80, 0, 0.80)",    # orange-red
+            1.00: "rgba(255, 0, 0, 0.95)"      # strong red
         }
     ).add_to(hospitaldist_layer)
 
