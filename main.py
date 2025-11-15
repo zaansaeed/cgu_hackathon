@@ -89,6 +89,30 @@ def main():
     measurement_layer.add_to(m)
 
     # ------------------------------------------------------------
+    # ADD HOSPITAL LOCATIONS
+    # ------------------------------------------------------------
+    try:
+        hospitals_df = pd.read_csv("hospitals.csv")
+
+        hospital_layer = folium.FeatureGroup(name="Hospitals", show=True)
+        for _, row in hospitals_df.iterrows():
+            folium.Circle(
+                location=[row["lat"], row["lng"]],
+                radius=804.5,  # 0.5 mile in meters
+                color="red",
+                fill=True,
+                fill_color="rgba(255,0,0,0.25)",
+                fill_opacity=0.25,
+                weight=1,
+                tooltip=f"<b>{row['Facility Name']}</b><br>{row['Address']}"
+            ).add_to(hospital_layer)
+
+        hospital_layer.add_to(m)
+
+    except Exception as e:
+        print("Error loading hospitals.csv:", e)
+
+    # ------------------------------------------------------------
     # 4. ADD HEATMAP LAYER
     # ------------------------------------------------------------
     df["intensity"] = df[metric] / df[metric].max()
@@ -265,6 +289,49 @@ def main():
     ).add_to(traffic_layer)
     traffic_layer.add_to(m)
 
+    # ---- Distance-to-Hospital Layer ----
+    import math
+
+    def haversine(lat1, lon1, lat2, lon2):
+        R = 3958.8
+        phi1 = math.radians(lat1)
+        phi2 = math.radians(lat2)
+        dphi = math.radians(lat2 - lat1)
+        dlambda = math.radians(lon2 - lon1)
+        a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
+        return 2*R*math.asin(math.sqrt(a))
+
+    hospital_coords = [(float(r["lat"]), float(r["lng"])) for _, r in hospitals_df.iterrows()]
+
+    distances = []
+    for _, r in df.iterrows():
+        lat, lon = r["Latitude"], r["Longitude"]
+        nearest = min(haversine(lat, lon, hlat, hlng) for hlat, hlng in hospital_coords)
+        distances.append(nearest)
+
+    df["HospitalDist"] = distances
+    df["hospital_intensity"] = ((df["HospitalDist"] - 0.5).clip(0, 14.5)) / 14.5
+    dist_data = df[["Latitude", "Longitude", "hospital_intensity"]].values.tolist()
+
+    hospitaldist_layer = folium.FeatureGroup(name="Hospital Distance", show=False)
+
+    HeatMap(
+        dist_data,
+        radius=30,
+        blur=40,
+        max_zoom=12,
+        min_opacity=0.02,
+        gradient={
+            0.00: "rgba(255, 0, 0, 0.00)",
+            0.25: "rgba(255, 69, 0, 0.40)",
+            0.50: "rgba(255, 140, 0, 0.55)",
+            0.75: "rgba(255, 165, 0, 0.70)",
+            1.00: "rgba(255, 0, 0, 0.95)"
+        }
+    ).add_to(hospitaldist_layer)
+
+    hospitaldist_layer.add_to(m)
+
     # Inject JavaScript to force global heatmap scaling (disable local extrema)
     custom_js = folium.Element("""
     <script>
@@ -388,6 +455,16 @@ def main():
     Percentile ranking of traffic density and vehicle-related pollution burden.
   </div>
 </details>
+
+<details style="margin-bottom:12px;">
+  <summary style="cursor:pointer; font-size:13px; font-weight:bold; color:#000; display:flex; justify-content:space-between; align-items:center;">
+    <span>Hospital Distance</span>
+    <input type="checkbox" id="hospitaldist-toggle">
+  </summary>
+  <div style="padding:8px 0 0 10px; font-size:12px;">
+    Distance (in miles) from each measurement site to the nearest hospital; farther = redder.
+  </div>
+</details>
     </div>
 
     <script>
@@ -434,6 +511,10 @@ def main():
 
     document.getElementById('traffic-toggle').addEventListener('change', function() {
         toggleLayer("Traffic Pctl", this.checked);
+    });
+
+    document.getElementById('hospitaldist-toggle').addEventListener('change', function() {
+        toggleLayer("Hospital Distance", this.checked);
     });
 
     // Global selection tracking
