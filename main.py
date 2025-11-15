@@ -39,6 +39,20 @@ def main():
     # ------------------------------------------------------------
     m = folium.Map(location=[34.0522, -118.2437], zoom_start=10, tiles="OpenStreetMap", control_scale=True, name="LA County Disparity Map")
 
+    # Enable rectangle drawing on the map
+    draw_plugin = folium.plugins.Draw(
+        draw_options={
+            'polyline': False,
+            'polygon': False,
+            'circle': False,
+            'marker': False,
+            'circlemarker': False,
+            'rectangle': True
+        },
+        edit_options={'edit': False, 'remove': True}
+    )
+    draw_plugin.add_to(m)
+
     la_border_group = folium.FeatureGroup(name="LA County Borders", show=True, control=False)
     folium.GeoJson(
         la_county,
@@ -68,7 +82,8 @@ def main():
                 f"<b>Asthma Pctl:</b> {round(float(row.get('Asthma Pctl', 0)), 2)}<br>"
                 f"<b>Education:</b> {round(float(row.get('Education', 0)), 2)}<br>"
                 f"<b>Poverty:</b> {round(float(row.get('Poverty', 0)), 2)}<br>"
-                f"<b>Haz. Waste Pctl:</b> {round(float(row.get('Haz. Waste Pctl', 0)), 2)}"
+                f"<b>Haz. Waste Pctl:</b> {round(float(row.get('Haz. Waste Pctl', 0)), 2)}<br>"
+                f"<b>Traffic Pctl:</b> {round(float(row.get('Traffic Pctl', 0)), 2)}"
             )
         ).add_to(measurement_layer)
     measurement_layer.add_to(m)
@@ -225,6 +240,31 @@ def main():
     ).add_to(hazw_layer)
     hazw_layer.add_to(m)
 
+    # ---- Traffic Layer ----
+    traffic = "Traffic Pctl"
+    df[traffic] = df[traffic].fillna(0)
+    df["traffic_intensity"] = df[traffic] / df[traffic].max()
+    traffic_data = df[["Latitude", "Longitude", "traffic_intensity"]].values.tolist()
+
+    traffic_layer = folium.FeatureGroup(name="Traffic Pctl", show=False)
+    HeatMap(
+        traffic_data,
+        radius=30,
+        blur=40,
+        max_zoom=12,
+        min_opacity=0.02,
+        gradient={
+            0.00: "rgba(0, 0, 255, 0.00)",
+            0.10: "rgba(135, 206, 250, 0.25)",
+            0.25: "rgba(173, 216, 230, 0.35)",
+            0.40: "rgba(255, 255, 102, 0.50)",
+            0.60: "rgba(255, 165, 0, 0.60)",
+            0.80: "rgba(255, 69, 0, 0.75)",
+            1.00: "rgba(255, 0, 0, 0.95)"
+        }
+    ).add_to(traffic_layer)
+    traffic_layer.add_to(m)
+
     # Inject JavaScript to force global heatmap scaling (disable local extrema)
     custom_js = folium.Element("""
     <script>
@@ -248,7 +288,7 @@ def main():
     <style>
     .ui-box {
         position: fixed;
-        top: 80px;
+        top: 200px;
         left: 20px;
         width: 210px;
         background-color: white;
@@ -338,6 +378,16 @@ def main():
     Percentile ranking of hazardous waste facility proximity and quantity.
   </div>
 </details>
+
+<details style="margin-bottom:12px;">
+  <summary style="cursor:pointer; font-size:13px; font-weight:bold; color:#000; display:flex; justify-content:space-between; align-items:center;">
+    <span>Traffic Pctl</span>
+    <input type="checkbox" id="traffic-toggle">
+  </summary>
+  <div style="padding:8px 0 0 10px; font-size:12px;">
+    Percentile ranking of traffic density and vehicle-related pollution burden.
+  </div>
+</details>
     </div>
 
     <script>
@@ -381,6 +431,28 @@ def main():
     document.getElementById('hazw-toggle').addEventListener('change', function() {
         toggleLayer("Haz. Waste Pctl", this.checked);
     });
+
+    document.getElementById('traffic-toggle').addEventListener('change', function() {
+        toggleLayer("Traffic Pctl", this.checked);
+    });
+
+    // Global selection tracking
+    window.savedRegions = [];
+    window.activeLayers = [];
+
+    // When a rectangle is created
+    map.on(folium.Draw.Event.CREATED, function(e) {
+        var layer = e.layer;
+        window._pendingLayer = layer; // store temporary layer
+        map.addLayer(layer);
+    });
+
+    // When user clicks "Clear All"
+    map.on('draw:deleted', function() {
+        window.savedRegions = [];
+        window.activeLayers = [];
+        console.log("Selections cleared.");
+    });
     </script>
     """
     # Re-enable hidden LayerControl so custom toggles work
@@ -402,6 +474,53 @@ def main():
     # ------------------------------------------------------------
     # 7. SAVE OUTPUT
     # ------------------------------------------------------------
+    # Prepare measurement site coordinates for JS
+    measurement_js_array = ",\n        ".join(
+        f"[{row['Latitude']}, {row['Longitude']}]" for _, row in df.iterrows()
+    )
+    capture_js = folium.Element(f"""
+<script>
+document.addEventListener("DOMContentLoaded", function () {{
+    var map = window._map || window.map;
+
+    // Inject measurement site coordinates into JS
+    var measurementSites = [
+        {measurement_js_array}
+    ];
+
+    map.on(folium.Draw.Event.CREATED, function (e) {{
+        var layer = e.layer;
+
+        if (e.layerType === 'rectangle') {{
+            var bounds = layer.getBounds();
+
+            // Find included measurement points
+            var inside = measurementSites.filter(function(pt) {{
+                return pt[0] <= bounds.getNorth() &&
+                       pt[0] >= bounds.getSouth() &&
+                       pt[1] <= bounds.getEast() &&
+                       pt[1] >= bounds.getWest();
+            }});
+
+            window.savedRegions = [{{
+                north: bounds.getNorth(),
+                south: bounds.getSouth(),
+                east: bounds.getEast(),
+                west: bounds.getWest(),
+                count: inside.length
+            }}];
+
+            window.activeLayers = [layer];
+
+            console.log("Region selected:", window.savedRegions[0]);
+        }}
+
+        map.addLayer(layer);
+    }});
+}});
+</script>
+""")
+    m.get_root().html.add_child(capture_js)
     m.save("water_quality_map.html")
     print("✓ Saved: water_quality_map.html")
 
